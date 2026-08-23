@@ -1,0 +1,247 @@
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from replaycheck import World, check, hazards, run  # noqa: E402
+
+EVENTS = [
+    {"event_id": "e1", "order_id": "order-771", "amount": 4200},
+    {"event_id": "e2", "order_id": "order-772", "amount": 1500},
+]
+
+
+def unkeyed_charge(event, world):
+    order = event["order_id"]
+    if world.has("paid", order):
+        return
+    world.effect("charge", order=order, amount=event["amount"])
+    world.effect("paid", key=order, order=order)
+
+
+def keyed_charge(event, world):
+    order = event["order_id"]
+    if world.has("paid", order):
+        return
+    world.effect("charge", key=order, order=order, amount=event["amount"])
+    world.effect("paid", key=order, order=order)
+
+
+def read_only(event, world):
+    world.has("paid", event["order_id"])
+
+
+def charged_once(world):
+    for _, data in world.effects("charge"):
+        order = data["order"]
+        assert world.count("charge", order=order) <= 1, f"{order} charged twice"
+    return True
+
+
+def test_replay_bug_is_caught():
+    report = check(unkeyed_charge, EVENTS, invariant=charged_once)
+    assert not report
+    assert report.failure.kind in {"invariant", "diverged"}
+    assert report.failure.schedule.crash_after is not None
+
+
+def test_failing_schedule_is_shrunk_to_one_event():
+    report = check(unkeyed_charge, EVENTS, invariant=charged_once)
+    assert len(report.failure.schedule.events) == 1
+
+
+def test_report_names_the_crashing_sink():
+    report = check(unkeyed_charge, EVENTS, invariant=charged_once)
+    assert "charge" in report.failure.headline()
+    assert "charged twice" in report.text()
+
+
+def test_keyed_sink_passes_every_schedule():
+    report = check(keyed_charge, EVENTS, invariant=charged_once)
+    assert report
+    assert report.durable_writes == 4
+    assert "PASS" in report.text()
+
+
+def test_divergence_is_caught_without_an_invariant():
+    report = check(unkeyed_charge, EVENTS)
+    assert not report
+    assert report.failure.kind == "diverged"
+    assert any("extra" in line for line in report.failure.detail_lines())
+
+
+def test_handler_with_no_writes_still_runs_duplicate_schedules():
+    report = check(read_only, EVENTS)
+    assert report
+    assert report.durable_writes == 0
+    assert report.schedules_run == len(EVENTS) + 1
+
+
+def test_invariant_failing_on_the_clean_run_is_reported_as_such():
+    def always_false(world):
+        assert False, "nope"
+
+    report = check(keyed_charge, EVENTS, invariant=always_false)
+    assert not report
+    assert "clean run" in report.failure.message
+
+
+def test_crash_fires_once_so_replay_terminates():
+    world = run(unkeyed_charge, EVENTS, crash_after=1)
+    assert world.crashed
+    assert world.count("charge", order="order-771") == 2
+
+
+def test_idempotent_sink_suppresses_the_second_write():
+    world = World()
+    assert world.effect("charge", key="a", order="a") is True
+    assert world.effect("charge", key="a", order="a") is False
+    assert world.count("charge") == 1
+
+
+def test_hazards_flags_a_fixture_with_nothing_interesting_in_it():
+    findings = {f.name: f for f in hazards(EVENTS)}
+    assert findings["duplicate delivery"].present is False
+    assert findings["out-of-order arrival"].present is False
+
+
+def test_hazards_sees_real_hazards():
+    dirty = [
+        {"event_id": "e1", "timestamp": 10, "offset": 0},
+        {"event_id": "e1", "timestamp": 5, "offset": 4},
+    ]
+    findings = {f.name: f for f in hazards(dirty)}
+    assert findings["duplicate delivery"].present
+    assert findings["out-of-order arrival"].present
+    assert findings["sequence gap"].present
+
+
+def test_cli_reports_absences(tmp_path):
+    fixture = tmp_path / "events.jsonl"
+    fixture.write_text("\n".join(json.dumps(e) for e in EVENTS))
+    result = subprocess.run(
+        [sys.executable, "-m", "replaycheck", "hazards", str(fixture)],
+        capture_output=True,
+        text=True,
+        cwd=str(Path(__file__).resolve().parents[1]),
+    )
+    assert result.returncode == 0
+    assert "ABSENT" in result.stdout
+    assert "none of them exercise" in result.stdout
+
+
+@pytest.mark.parametrize("crash_after", [1, 2, 3, 4])
+def test_every_crash_point_terminates(crash_after):
+    world = run(keyed_charge, EVENTS, crash_after=crash_after)
+    assert world.count("paid") == 2
+
+
+def paid_before_charge(event, world):
+    order = event["order_id"]
+    if world.has("paid", order):
+        return
+    world.effect("paid", key=order, order=order)
+    world.effect("charge", key=order, order=order, amount=event["amount"])
+
+
+def test_lost_effect_is_caught_not_just_duplicated_ones():
+    report = check(paid_before_charge, EVENTS)
+    assert not report
+    assert report.failure.kind == "diverged"
+    assert any("never wrote" in line for line in report.failure.detail_lines())
+
+
+def test_poison_pill_is_reported_not_raised():
+    def unguarded(event, world):
+        world.effect("charge", key=event["order_id"], order=event["order_id"])
+
+    report = check(unguarded, [{"order_id": "a"}, {"oops": "x"}])
+    assert not report
+    assert report.failure.kind == "raised"
+    assert "redelivered forever" in report.failure.message
+    assert "raised" in report.failure.headline()
+
+
+def test_setup_seeds_pre_existing_state():
+    def already_paid(world):
+        world.effect("paid", key="order-771", order="order-771")
+
+    report = check(unkeyed_charge, [{"order_id": "order-771", "amount": 1}], setup=already_paid)
+    assert report, report.text()
+    assert report.durable_writes == 0
+
+
+def test_setup_effects_are_not_crash_points():
+    def seeded(world):
+        world.effect("seed", key="s", note="pre-existing")
+
+    world = run(keyed_charge, EVENTS, crash_after=1, setup=seeded)
+    assert world.crash_effect == "charge"
+    assert world.count("seed") == 1
+
+
+def test_replay_invariance_does_not_imply_correctness():
+    """The clean run is the oracle, so a handler wrong on the happy path passes."""
+
+    def wrong_amount(event, world):
+        world.effect("charge", key=event["order_id"], order=event["order_id"], amount=999)
+
+    assert check(wrong_amount, [{"order_id": "a", "amount": 4200}])
+
+    def amount_matches(world):
+        for _, data in world.effects("charge"):
+            assert data["amount"] == 4200, "charged the wrong amount"
+
+    assert not check(wrong_amount, [{"order_id": "a", "amount": 4200}], invariant=amount_matches)
+
+
+ORDER_EVENTS = [
+    {"type": "paid", "order_id": "order-771"},
+    {"type": "shipped", "order_id": "order-771"},
+]
+
+
+def order_dependent(event, world):
+    order = event["order_id"]
+    if event["type"] == "paid":
+        world.effect("paid", key=order, order=order)
+    elif world.has("paid", order):
+        world.effect("shipped", key=order, order=order)
+
+
+def order_tolerant(event, world):
+    order = event["order_id"]
+    if event["type"] == "paid":
+        world.effect("paid", key=order, order=order)
+        if world.has("pending_ship", order):
+            world.effect("shipped", key=order, order=order)
+    elif world.has("paid", order):
+        world.effect("shipped", key=order, order=order)
+    else:
+        world.effect("pending_ship", key=order, order=order)
+
+
+def test_reordering_is_off_by_default():
+    assert check(order_dependent, ORDER_EVENTS)
+
+
+def test_reordering_catches_a_dropped_out_of_order_event():
+    report = check(order_dependent, ORDER_EVENTS, reorder=1, compare=["paid", "shipped"])
+    assert not report
+    assert report.failure.schedule.kind == "reorder"
+    assert "arrives" in report.failure.headline()
+    assert any("never wrote" in line for line in report.failure.detail_lines())
+
+
+def test_a_tolerant_handler_passes_reordering():
+    assert check(order_tolerant, ORDER_EVENTS, reorder=1, compare=["paid", "shipped"])
+
+
+def test_compare_scopes_the_state_comparison():
+    """Without compare, internal bookkeeping counts as a divergence."""
+    assert not check(order_tolerant, ORDER_EVENTS, reorder=1)
+    assert check(order_tolerant, ORDER_EVENTS, reorder=1, compare=["paid", "shipped"])
