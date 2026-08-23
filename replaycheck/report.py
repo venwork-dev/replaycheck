@@ -50,11 +50,25 @@ class Report:
     schedules_run: int
     durable_writes: int
     failure: Failure | None = None
+    schedules_available: int = 0
+    sampled: bool = False
+    seed: int = 0
 
     def __bool__(self) -> bool:
         return self.ok
 
+    @property
+    def complete(self) -> bool:
+        """Did every available schedule actually run?"""
+        return not self.sampled
+
     def text(self) -> str:
+        if self.ok and self.sampled:
+            return (
+                f"PARTIAL  no divergence in {self.schedules_run} of "
+                f"{self.schedules_available} schedules (sampled, seed {self.seed}); "
+                f"raise max_schedules to cover the rest"
+            )
         if self.ok:
             return (
                 f"PASS  {self.schedules_run} schedules, "

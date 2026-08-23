@@ -138,6 +138,47 @@ FAIL  handler raised on an event it never commits
 If raising is what you intend, catch it in the handler and write a dead-letter
 effect instead.
 
+## Large streams
+
+Cost is quadratic: every durable write is a crash point, and every schedule
+replays the whole stream. Measured on one machine, fully enumerated:
+
+| events | schedules | time |
+|---|---|---|
+| 100 | 301 | 0.09s |
+| 400 | 1,201 | 1.70s |
+| 800 | 2,401 | 7.69s |
+
+Extrapolating, 10,000 events is roughly twenty minutes and 100,000 is out of
+reach. So don't enumerate a huge stream — replay bugs are local, and every
+failure this tool finds shrinks to one or two events. A few hundred short random
+streams cover the same transitions for a fraction of the work:
+
+```python
+from replaycheck import sweep
+
+def make_events(rng):
+    return [
+        {"order_id": f"o{rng.randint(0, 3)}", "amount": rng.randrange(100, 9999)}
+        for _ in range(rng.randint(1, 5))
+    ]
+
+sweep(process_order, make_events, runs=300)
+```
+
+Same bug, found in 0.00s instead of 2.53s, and shrunk to a single event.
+
+If you do run a long stream, `max_schedules` caps the work and the result says so
+rather than pretending:
+
+```
+PARTIAL  no divergence in 201 of 1998 schedules (sampled, seed 0);
+         raise max_schedules to cover the rest
+```
+
+Sampling is stratified across crash, duplicate and reorder schedules and seeded,
+so a partial run still covers every family reproducibly.
+
 ## Fixture hazards
 
 Replay bugs hide behind well-behaved sample data. This says so before you trust

@@ -245,3 +245,55 @@ def test_compare_scopes_the_state_comparison():
     """Without compare, internal bookkeeping counts as a divergence."""
     assert not check(order_tolerant, ORDER_EVENTS, reorder=1)
     assert check(order_tolerant, ORDER_EVENTS, reorder=1, compare=["paid", "shipped"])
+
+
+def test_sampling_covers_every_family_not_just_the_first():
+    """Head-truncation kept only crash schedules and still reported PASS."""
+    from collections import Counter
+
+    from replaycheck.schedule import generate
+
+    events = [{"order_id": f"o{i}"} for i in range(400)]
+    plan = generate(events, durable_writes=800, max_schedules=200, reorder=1)
+    kinds = Counter(s.kind for s in plan)
+    assert kinds["crash"] and kinds["duplicate"] and kinds["reorder"]
+    assert plan.sampled
+    assert plan.available > len(plan)
+
+
+def test_a_sampled_run_does_not_claim_to_be_a_pass():
+    events = [{"order_id": f"o{i}", "amount": i} for i in range(400)]
+    report = check(keyed_charge, events, max_schedules=50)
+    assert report
+    assert not report.complete
+    assert "PARTIAL" in report.text()
+    assert "raise max_schedules" in report.text()
+
+
+def test_a_complete_run_says_so():
+    report = check(keyed_charge, EVENTS)
+    assert report.complete
+    assert "PASS" in report.text()
+
+
+def test_sweep_finds_a_replay_bug_from_short_streams():
+    from replaycheck import sweep
+
+    def make_events(rng):
+        return [
+            {"order_id": f"o{rng.randint(0, 3)}", "amount": rng.randrange(1, 999)}
+            for _ in range(rng.randint(1, 4))
+        ]
+
+    report = sweep(unkeyed_charge, make_events, runs=100)
+    assert not report
+    assert len(report.failure.schedule.events) <= 2
+
+
+def test_sweep_passes_a_correct_handler():
+    from replaycheck import sweep
+
+    def make_events(rng):
+        return [{"order_id": f"o{rng.randint(0, 3)}", "amount": 1} for _ in range(3)]
+
+    assert sweep(keyed_charge, make_events, runs=50)

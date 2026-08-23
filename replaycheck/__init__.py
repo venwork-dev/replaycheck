@@ -1,14 +1,15 @@
 """replaycheck -- find the bugs that only appear when an event is delivered twice."""
 
-from .checker import check
+from .checker import check, sweep
 from .hazards import Hazard, hazards
 from .report import Failure, Report
 from .runner import Stalled, run
-from .schedule import Schedule
+from .schedule import Plan, Schedule
 from .world import Crash, World
 
 __all__ = [
     "check",
+    "sweep",
     "run",
     "hazards",
     "Hazard",
@@ -17,5 +18,6 @@ __all__ = [
     "Report",
     "Failure",
     "Schedule",
+    "Plan",
     "Stalled",
 ]

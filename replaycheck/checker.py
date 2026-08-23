@@ -7,6 +7,8 @@ one.
 
 from __future__ import annotations
 
+import random
+
 from .report import Failure, Report
 from .runner import HandlerError, Stalled, run
 from .schedule import Schedule, clean, generate
@@ -33,6 +35,7 @@ def check(
     reorder: int = 0,
     compare=None,
     max_schedules: int = 200,
+    seed: int = 0,
 ) -> Report:
     """Replay ``handler`` over ``events`` under crash and duplicate schedules.
 
@@ -153,11 +156,15 @@ def check(
             )
         return None
 
-    schedules = generate(
-        events, root.applied, max_schedules=max_schedules, reorder=reorder
+    plan = generate(
+        events,
+        root.applied,
+        max_schedules=max_schedules,
+        reorder=reorder,
+        seed=seed,
     )
 
-    for position, schedule in enumerate(schedules, start=2):
+    for position, schedule in enumerate(plan, start=2):
         failure = inspect(schedule)
         if failure is None:
             continue
@@ -172,10 +179,37 @@ def check(
             schedules_run=position,
             durable_writes=root.applied,
             failure=inspect(smallest) or failure,
+            schedules_available=plan.available,
+            sampled=plan.sampled,
+            seed=plan.seed,
         )
 
     return Report(
         ok=True,
-        schedules_run=len(schedules) + 1,
+        schedules_run=len(plan) + 1,
         durable_writes=root.applied,
+        schedules_available=plan.available,
+        sampled=plan.sampled,
+        seed=plan.seed,
     )
+
+
+def sweep(handler, make_events, runs: int = 200, seed: int = 0, **kwargs) -> Report:
+    """Check many small generated streams instead of one large one.
+
+    Replay bugs are local: every failure this tool finds shrinks to one or two
+    events. Enumerating schedules for one long stream costs O(n^2) and mostly
+    re-tests the same handful of transitions, so a few hundred short random
+    streams find the same bugs for a fraction of the work.
+
+    ``make_events(rng)`` returns one stream. The first failing report is returned
+    as-is, with its shrunk schedule naming the events that broke it.
+    """
+    rng = random.Random(seed)
+    checked = 0
+    for _ in range(runs):
+        report = check(handler, make_events(rng), **kwargs)
+        checked += report.schedules_run
+        if not report:
+            return report
+    return Report(ok=True, schedules_run=checked, durable_writes=0)
