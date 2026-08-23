@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import random
 
+from collections import Counter
+
 from .report import Failure, Report
 from .runner import HandlerError, Stalled, run
 from .schedule import Schedule, clean, generate
@@ -61,6 +63,12 @@ def check(
     events = list(events)
     baselines: dict[str, list] = {}
     wanted = None if compare is None else set(compare)
+
+    def blind_spots_in(state):
+        """Writes with identical recorded data: distinct entities would collide."""
+        return sorted(
+            (entry, count) for entry, count in Counter(state).items() if count > 1
+        )
 
     def state_of(world):
         fingerprint = world.fingerprint()
@@ -182,6 +190,7 @@ def check(
             schedules_available=plan.available,
             sampled=plan.sampled,
             seed=plan.seed,
+            blind_spots=blind_spots_in(state_of(root)),
         )
 
     return Report(
@@ -191,6 +200,7 @@ def check(
         schedules_available=plan.available,
         sampled=plan.sampled,
         seed=plan.seed,
+        blind_spots=blind_spots_in(state_of(root)),
     )
 
 

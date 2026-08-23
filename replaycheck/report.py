@@ -53,6 +53,7 @@ class Report:
     schedules_available: int = 0
     sampled: bool = False
     seed: int = 0
+    blind_spots: list = field(default_factory=list)
 
     def __bool__(self) -> bool:
         return self.ok
@@ -62,23 +63,37 @@ class Report:
         """Did every available schedule actually run?"""
         return not self.sampled
 
+    def notes(self) -> list[str]:
+        """Effects the comparison cannot tell apart."""
+        lines = []
+        for entry, count in self.blind_spots:
+            lines.append(
+                f"NOTE  {count} identical {render_effect(entry)} writes -- a "
+                "misattribution between them would be invisible; record a "
+                "distinguishing field"
+            )
+        return lines
+
     def text(self) -> str:
         if self.ok and self.sampled:
-            return (
+            headline = (
                 f"PARTIAL  no divergence in {self.schedules_run} of "
                 f"{self.schedules_available} schedules (sampled, seed {self.seed}); "
                 f"raise max_schedules to cover the rest"
             )
+            return "\n".join([headline] + self.notes())
         if self.ok:
-            return (
+            headline = (
                 f"PASS  {self.schedules_run} schedules, "
                 f"{self.durable_writes} durable writes, no divergence"
             )
+            return "\n".join([headline] + self.notes())
         f = self.failure
         lines = [f"FAIL  {f.headline()}"]
         for line in f.detail_lines():
             lines.append(f"      {line}")
         events = f.schedule.events
+        lines += self.notes()
         lines.append(f"      shortest failing input ({len(events)} event(s)):")
         for event in events[:3]:
             lines.append(f"        {event!r}")

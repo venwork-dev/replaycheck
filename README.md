@@ -79,6 +79,34 @@ The handler writes through a `World` instead of a real database:
 The harness owns the commit position: an event is committed when your handler
 returns for it, and a crash resumes from the last one that did.
 
+## What counts as "the same" write
+
+Nothing is matched by dollar amount. Two effects are the same only if the name
+and *every* recorded field match, and the comparison is a multiset — so two
+orders for $50 are two writes, and a third $50 charge is a duplicate. Amount
+collisions do not confuse it.
+
+What matters is which fields you record. `world.effect("charge", amount=50)`
+records only the amount, so "o1 and o2 each charged $50" and "o1 charged $50
+twice, o2 never charged" produce the same durable state. Same total, wrong
+customer, invisible. Recording the order id separates them.
+
+The report says so rather than leaving you to work it out:
+
+```
+PASS  7 schedules, 4 durable writes, no divergence
+NOTE  2 identical charge(amount=50) writes -- a misattribution between them
+      would be invisible; record a distinguishing field
+```
+
+It is a note, not a failure — two identical writes can be perfectly correct. It
+only tells you the comparison has a blind spot there.
+
+Note that `key=` and the recorded fields do different jobs. `key` decides whether
+the sink suppresses a second write; the recorded fields decide whether the
+comparison can tell two writes apart. A keyed sink can still leave a blind spot
+if what it records is not distinguishing.
+
 ## Out-of-order arrival
 
 Off by default, because a reordering is not automatically a bug — if your source

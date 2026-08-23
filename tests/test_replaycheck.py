@@ -297,3 +297,68 @@ def test_sweep_passes_a_correct_handler():
         return [{"order_id": f"o{rng.randint(0, 3)}", "amount": 1} for _ in range(3)]
 
     assert sweep(keyed_charge, make_events, runs=50)
+
+
+SAME_AMOUNT = [{"order_id": "o1", "amount": 50}, {"order_id": "o2", "amount": 50}]
+
+
+def charge_without_identity(event, world):
+    order = event["order_id"]
+    if world.has("paid", order):
+        return
+    world.effect("charge", key=order, amount=event["amount"])
+    world.effect("paid", key=order, order=order)
+
+
+def charge_with_identity(event, world):
+    order = event["order_id"]
+    if world.has("paid", order):
+        return
+    world.effect("charge", key=order, order=order, amount=event["amount"])
+    world.effect("paid", key=order, order=order)
+
+
+def test_identical_amounts_do_not_confuse_duplicate_detection():
+    """Two orders for the same amount is not a duplicate; a third charge is."""
+
+    def unkeyed(event, world):
+        order = event["order_id"]
+        if world.has("paid", order):
+            return
+        world.effect("charge", order=order, amount=event["amount"])
+        world.effect("paid", key=order, order=order)
+
+    report = check(unkeyed, SAME_AMOUNT)
+    assert not report
+    assert any("extra" in line for line in report.failure.detail_lines())
+
+
+def test_indistinguishable_writes_are_flagged():
+    report = check(charge_without_identity, SAME_AMOUNT)
+    assert report, "no replay bug here -- both sinks are keyed"
+    assert report.blind_spots, "identical writes should be reported"
+    assert "misattribution" in report.text()
+
+
+def test_recording_an_identity_clears_the_flag():
+    report = check(charge_with_identity, SAME_AMOUNT)
+    assert report
+    assert not report.blind_spots
+    assert "NOTE" not in report.text()
+
+
+def test_a_misattribution_is_invisible_without_an_identity():
+    """The limit the note warns about, pinned so it stays honest."""
+    correct, swapped = World(), World()
+    correct.effect("charge", amount=50)
+    correct.effect("charge", amount=50)
+    swapped.effect("charge", amount=50)
+    swapped.effect("charge", amount=50)
+    assert correct.fingerprint() == swapped.fingerprint()
+
+    correct, swapped = World(), World()
+    correct.effect("charge", order="o1", amount=50)
+    correct.effect("charge", order="o2", amount=50)
+    swapped.effect("charge", order="o1", amount=50)
+    swapped.effect("charge", order="o1", amount=50)
+    assert correct.fingerprint() != swapped.fingerprint()
