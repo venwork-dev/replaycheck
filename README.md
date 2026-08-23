@@ -1,5 +1,7 @@
 # replaycheck
 
+[![CI](https://github.com/venwork-dev/replaycheck/actions/workflows/ci.yml/badge.svg)](https://github.com/venwork-dev/replaycheck/actions/workflows/ci.yml)
+
 Find the bugs that only appear when an event is delivered twice.
 
 ## The bug it finds
