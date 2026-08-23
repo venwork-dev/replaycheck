@@ -27,6 +27,8 @@ class Failure:
     def headline(self) -> str:
         if self.kind == "raised":
             return "handler raised on an event it never commits"
+        if self.kind == "stalled":
+            return "the run never finishes"
         if self.schedule.crash_after is not None and self.crash_effect is not None:
             return f"crashed after {self.crash_effect}() on event {self.crash_event_index}"
         return self.schedule.describe()

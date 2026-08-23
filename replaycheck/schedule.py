@@ -84,7 +84,8 @@ def generate(
     Over budget, this samples proportionally from each family rather than taking
     the first N. Taking the first N keeps only crash schedules and silently drops
     every duplicate and reorder, which turns a partial run into a confident-looking
-    pass.
+    pass. ``max_schedules`` must provide at least one slot for every non-empty
+    family; the clean baseline run does not count against this budget.
     """
     events = list(events)
     families: dict[str, list] = {
@@ -99,16 +100,43 @@ def generate(
         "reorder": [],
     }
     if reorder:
+        # Moving event i one place later and event i+1 one place earlier produce
+        # the same delivery, so dedupe on the resulting order rather than on the
+        # (source, target) pair. Without this every adjacent swap is enumerated
+        # twice, which doubles the work and inflates this family's share of a
+        # stratified sample.
+        seen_orders = set()
         for source in range(len(events)):
             low = max(0, source - reorder)
             high = min(len(events) - 1, source + reorder)
-            families["reorder"] += [
-                Schedule(events=list(events), reorder=(source, target))
-                for target in range(low, high + 1)
-                if target != source
-            ]
+            for target in range(low, high + 1):
+                if target == source:
+                    continue
+                order = list(range(len(events)))
+                order.insert(target, order.pop(source))
+                fingerprint = tuple(order)
+                if fingerprint in seen_orders:
+                    continue
+                seen_orders.add(fingerprint)
+                families["reorder"].append(
+                    Schedule(events=list(events), reorder=(source, target))
+                )
 
     available = sum(len(group) for group in families.values())
+    enabled = [name for name, group in families.items() if group]
+    minimum = len(enabled)
+    if max_schedules < minimum:
+        if enabled:
+            names = ", ".join(enabled)
+            raise ValueError(
+                f"max_schedules={max_schedules} is too small to sample every "
+                f"enabled schedule family ({names}); set max_schedules to at "
+                f"least {minimum}"
+            )
+        raise ValueError(
+            f"max_schedules={max_schedules} cannot be negative; "
+            "set max_schedules to at least 0"
+        )
     if available <= max_schedules:
         flat = [s for group in families.values() for s in group]
         return Plan(schedules=flat, available=available, sampled=False, seed=seed)

@@ -44,35 +44,39 @@ def hazards(events, id_field=None, time_field=None, sequence_field=None) -> list
     sequence_field = sequence_field or _pick(events, SEQUENCE_FIELDS)
 
     if id_field:
-        seen, repeats = set(), 0
+        seen, repeats, missing = set(), 0, 0
         for event in events:
-            value = event.get(id_field)
+            if id_field not in event:
+                missing += 1
+                continue
+            value = event[id_field]
             if value in seen:
                 repeats += 1
             seen.add(value)
-        found.append(
-            Hazard(
-                "duplicate delivery",
-                repeats > 0,
-                f"{repeats} repeated {id_field} value(s) across {len(events)} events",
-            )
-        )
+        detail = f"{repeats} repeated {id_field} value(s) across {len(events)} events"
+        if missing:
+            detail += f"; {missing} event(s) have no {id_field} and were not checked"
+        found.append(Hazard("duplicate delivery", repeats > 0, detail))
     else:
         found.append(Hazard("duplicate delivery", False, "no id-like field to check"))
 
     if time_field:
-        regressions = sum(
-            1
-            for a, b in zip(events, events[1:])
-            if _lt(b.get(time_field), a.get(time_field))
+        regressions = incomparable = 0
+        for first, second in zip(events, events[1:]):
+            if time_field not in first or time_field not in second:
+                incomparable += 1
+                continue
+            outcome = _lt(second[time_field], first[time_field])
+            if outcome is None:
+                incomparable += 1
+            elif outcome:
+                regressions += 1
+        detail = (
+            f"{regressions} event(s) arrive with a {time_field} before their predecessor"
         )
-        found.append(
-            Hazard(
-                "out-of-order arrival",
-                regressions > 0,
-                f"{regressions} event(s) arrive with a {time_field} before their predecessor",
-            )
-        )
+        if incomparable:
+            detail += f"; {incomparable} pair(s) could not be compared"
+        found.append(Hazard("out-of-order arrival", regressions > 0, detail))
     else:
         found.append(Hazard("out-of-order arrival", False, "no time-like field to check"))
 
@@ -95,8 +99,9 @@ def hazards(events, id_field=None, time_field=None, sequence_field=None) -> list
     return found
 
 
-def _lt(left, right) -> bool:
+def _lt(left, right):
+    """True, False, or None when the two values are not comparable."""
     try:
         return left < right
     except TypeError:
-        return False
+        return None

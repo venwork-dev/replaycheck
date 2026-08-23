@@ -25,17 +25,27 @@ class World:
 
     # -- what a handler calls ------------------------------------------------
 
-    def effect(self, name: str, key: str | None = None, **data) -> bool:
+    def effect(self, name: str, key: str | None = None, data: dict | None = None, **fields) -> bool:
         """Write a durable side effect. Returns False if the sink deduplicated it.
 
         Passing ``key`` makes the sink idempotent for that key: a second call
         with the same name and key writes nothing.
+
+        Recorded fields are normally given as keywords. ``name``, ``key`` and
+        ``data`` are taken by this method, so a field of your own with one of
+        those names has to go through ``data=`` -- which is the usual case for a
+        Kafka record key::
+
+            world.effect("dlq", key=idempotency, data={"key": record.key})
         """
+        recorded = dict(data or {})
+        recorded.update(fields)
+
         if key is not None and (name, key) in self._keys:
             return False
         if key is not None:
             self._keys.add((name, key))
-        self._effects.append((name, dict(data)))
+        self._effects.append((name, recorded))
         self._applied += 1
 
         if self._crash_after == self._applied and not self.crashed:

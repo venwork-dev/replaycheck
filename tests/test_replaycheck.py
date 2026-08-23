@@ -261,6 +261,49 @@ def test_sampling_covers_every_family_not_just_the_first():
     assert plan.available > len(plan)
 
 
+@pytest.mark.parametrize(
+    ("events", "durable_writes", "reorder", "families"),
+    [
+        ([], 0, 0, set()),
+        ([], 2, 0, {"crash"}),
+        ([{"id": "a"}, {"id": "b"}], 0, 0, {"duplicate"}),
+        ([{"id": "a"}, {"id": "b"}], 2, 0, {"crash", "duplicate"}),
+        ([{"id": "a"}, {"id": "b"}], 0, 1, {"duplicate", "reorder"}),
+        (
+            [{"id": "a"}, {"id": "b"}],
+            2,
+            1,
+            {"crash", "duplicate", "reorder"},
+        ),
+    ],
+)
+def test_schedule_budget_must_cover_each_enabled_family(
+    events, durable_writes, reorder, families
+):
+    from replaycheck.schedule import generate
+
+    minimum = len(families)
+    with pytest.raises(ValueError) as exc_info:
+        generate(
+            events,
+            durable_writes=durable_writes,
+            max_schedules=minimum - 1,
+            reorder=reorder,
+        )
+
+    message = str(exc_info.value)
+    assert f"set max_schedules to at least {minimum}" in message
+    assert all(family in message for family in families)
+
+    plan = generate(
+        events,
+        durable_writes=durable_writes,
+        max_schedules=minimum,
+        reorder=reorder,
+    )
+    assert {schedule.kind for schedule in plan} == families
+
+
 def test_a_sampled_run_does_not_claim_to_be_a_pass():
     events = [{"order_id": f"o{i}", "amount": i} for i in range(400)]
     report = check(keyed_charge, events, max_schedules=50)
@@ -362,3 +405,94 @@ def test_a_misattribution_is_invisible_without_an_identity():
     swapped.effect("charge", order="o1", amount=50)
     swapped.effect("charge", order="o1", amount=50)
     assert correct.fingerprint() != swapped.fingerprint()
+
+
+# --- regressions from the code review ---------------------------------------
+
+
+def test_compare_as_a_bare_string_is_rejected():
+    """set('charge') is its characters, which would compare nothing and pass."""
+    with pytest.raises(TypeError, match="not a string"):
+        check(unkeyed_charge, EVENTS, compare="charge")
+
+
+def test_compare_that_matches_no_effect_is_rejected():
+    with pytest.raises(ValueError, match="matches none of the effects"):
+        check(unkeyed_charge, EVENTS, compare=["chrage"])
+
+
+def test_empty_compare_is_rejected():
+    with pytest.raises(ValueError, match="compare is empty"):
+        check(unkeyed_charge, EVENTS, compare=[])
+
+
+def test_sweep_reports_partial_coverage_from_its_inner_runs():
+    from replaycheck import sweep
+
+    def three_writes(event, world):
+        for name in ("a", "b", "c"):
+            world.effect(name, key=event["id"])
+
+    report = sweep(
+        three_writes,
+        lambda rng: [{"id": f"x{i}"} for i in range(3)],
+        runs=2,
+        max_schedules=3,
+    )
+    assert report
+    assert report.sampled and not report.complete
+    assert report.durable_writes > 0
+    assert "PARTIAL" in report.text()
+
+
+def test_a_stalling_clean_run_is_reported_not_raised():
+    from replaycheck import Crash
+
+    def never_finishes(event, world):
+        raise Crash("boom")
+
+    report = check(never_finishes, EVENTS)
+    assert not report
+    assert report.failure.kind == "stalled"
+    assert "never finishes" in report.failure.headline()
+
+
+def test_a_field_named_key_can_still_be_recorded():
+    world = World()
+    world.arm(None)
+    world.effect("dlq", key="idem-1", data={"key": "kafka-a"})
+    world.effect("dlq", key="idem-2", data={"key": "kafka-b"})
+    assert world.count("dlq") == 2
+    assert world.count("dlq", key="kafka-a") == 1
+
+
+def test_hazards_does_not_count_missing_ids_as_duplicates():
+    findings = {f.name: f for f in hazards([{"event_id": "a"}, {"other": 1}, {"other": 2}])}
+    duplicate = findings["duplicate delivery"]
+    assert duplicate.present is False
+    assert "were not checked" in duplicate.detail
+
+
+def test_hazards_says_when_timestamps_cannot_be_compared():
+    findings = {f.name: f for f in hazards([{"timestamp": 1}, {"timestamp": "x"}])}
+    assert "could not be compared" in findings["out-of-order arrival"].detail
+
+
+def test_each_reorder_delivery_is_generated_once():
+    from replaycheck.schedule import generate
+
+    events = [{"i": i} for i in range(4)]
+    plan = generate(events, durable_writes=0, max_schedules=10**9, reorder=1)
+    orders = [
+        tuple(e["i"] for e in s.delivered()) for s in plan if s.kind == "reorder"
+    ]
+    assert len(orders) == len(set(orders))
+
+
+def test_max_schedules_below_the_family_count_is_rejected():
+    """Without this the quota loop silently drops a whole family."""
+    from replaycheck.schedule import generate
+
+    events = [{"i": i} for i in range(5)]
+    with pytest.raises(ValueError, match="too small to sample"):
+        generate(events, durable_writes=10, max_schedules=2, reorder=1)

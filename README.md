@@ -71,8 +71,11 @@ assert report, report.text()
 
 The handler writes through a `World` instead of a real database:
 
-- `world.effect(name, key=None, **data)` — a durable write. Pass `key` and the
-  sink deduplicates, the way a real idempotent endpoint would.
+- `world.effect(name, key=None, data=None, **fields)` — a durable write. Pass
+  `key` and the sink deduplicates, the way a real idempotent endpoint would.
+  `name`, `key` and `data` are taken by the method, so a recorded field of your
+  own with one of those names goes through `data=` — which is the usual case for
+  a Kafka record key: `world.effect("dlq", key=idem, data={"key": record.key})`.
 - `world.has(name, key)` — has this already been written?
 - `world.count(name, **match)` / `world.effects(name)` — for invariants.
 
@@ -194,6 +197,9 @@ def make_events(rng):
 sweep(process_order, make_events, runs=300)
 ```
 
+`sweep` reports the coverage its inner runs actually had, so a capped budget
+still surfaces as PARTIAL rather than PASS.
+
 Same bug, found in 0.00s instead of 2.53s, and shrunk to a single event.
 
 If you do run a long stream, `max_schedules` caps the work and the result says so
@@ -205,7 +211,15 @@ PARTIAL  no divergence in 201 of 1998 schedules (sampled, seed 0);
 ```
 
 Sampling is stratified across crash, duplicate and reorder schedules and seeded,
-so a partial run still covers every family reproducibly.
+so a partial run still covers every family reproducibly. The minimum
+`max_schedules` is therefore one slot per enabled family that has candidates:
+normally 2 for crash and duplicate schedules, or 3 when `reorder` is enabled on
+a stream with at least two events. The clean baseline run is additional and does
+not consume this budget. If a handler makes no durable writes, there is no crash
+family, so the corresponding minimums are 1 without reordering and 2 with it. An
+empty stream has no candidate schedules and permits 0. A smaller value is
+rejected with an error that names the enabled families and the minimum required
+value.
 
 ## Fixture hazards
 

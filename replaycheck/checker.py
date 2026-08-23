@@ -62,7 +62,22 @@ def check(
     """
     events = list(events)
     baselines: dict[str, list] = {}
-    wanted = None if compare is None else set(compare)
+
+    if compare is None:
+        wanted = None
+    elif isinstance(compare, str):
+        raise TypeError(
+            f"compare must be a collection of effect names, not a string; "
+            f"compare={compare!r} would be read as its characters and silently "
+            f"compare nothing. Use compare=[{compare!r}]."
+        )
+    else:
+        wanted = set(compare)
+        if not wanted:
+            raise ValueError(
+                "compare is empty, which would compare nothing at all; pass None "
+                "to compare every effect"
+            )
 
     def blind_spots_in(state):
         """Writes with identical recorded data: distinct entities would collide."""
@@ -90,6 +105,18 @@ def check(
 
     try:
         root = run(handler, events, setup=setup)
+    except Stalled as exc:
+        return Report(
+            ok=False,
+            schedules_run=1,
+            durable_writes=0,
+            failure=Failure(
+                kind="stalled",
+                message=f"{exc} -- the clean run never finishes, so there is no "
+                "correct end state to compare schedules against",
+                schedule=clean(events),
+            ),
+        )
     except HandlerError as exc:
         return Report(
             ok=False,
@@ -101,6 +128,15 @@ def check(
                 schedule=Schedule(events=[exc.event]),
             ),
         )
+    if wanted is not None:
+        written = {entry[0] for entry in root.fingerprint()}
+        if written and not (wanted & written):
+            raise ValueError(
+                f"compare={sorted(wanted)} matches none of the effects this "
+                f"handler writes ({sorted(written)}), so every comparison would "
+                "be vacuously equal"
+            )
+
     ok, message = _evaluate_invariant(invariant, root)
     if not ok:
         return Report(
@@ -216,10 +252,21 @@ def sweep(handler, make_events, runs: int = 200, seed: int = 0, **kwargs) -> Rep
     as-is, with its shrunk schedule naming the events that broke it.
     """
     rng = random.Random(seed)
-    checked = 0
+    checked = available = writes = 0
+    sampled = False
     for _ in range(runs):
         report = check(handler, make_events(rng), **kwargs)
         checked += report.schedules_run
+        available += report.schedules_available
+        writes += report.durable_writes
+        sampled = sampled or report.sampled
         if not report:
             return report
-    return Report(ok=True, schedules_run=checked, durable_writes=0)
+    return Report(
+        ok=True,
+        schedules_run=checked,
+        durable_writes=writes,
+        schedules_available=available,
+        sampled=sampled,
+        seed=seed,
+    )
