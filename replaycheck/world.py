@@ -8,6 +8,8 @@ where at-least-once delivery bites.
 
 from __future__ import annotations
 
+from copy import deepcopy
+
 
 class Crash(RuntimeError):
     """Raised inside a durable sink to simulate the process dying."""
@@ -45,7 +47,9 @@ class World:
             return False
         if key is not None:
             self._keys.add((name, key))
-        self._effects.append((name, recorded))
+        # Durable state is a snapshot. Retaining the caller's nested objects
+        # would let later handler mutations rewrite an already-applied effect.
+        self._effects.append((name, deepcopy(recorded)))
         self._applied += 1
 
         if self._crash_after == self._applied and not self.crashed:

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass, field
+from typing import Iterator
 
 
 @dataclass
@@ -87,43 +88,25 @@ def generate(
     pass. ``max_schedules`` must provide at least one slot for every non-empty
     family; the clean baseline run does not count against this budget.
     """
-    events = list(events)
-    families: dict[str, list] = {
-        "crash": [
-            Schedule(events=list(events), crash_after=n)
-            for n in range(1, durable_writes + 1)
-        ],
-        "duplicate": [
-            Schedule(events=list(events), duplicate_index=index)
-            for index in range(len(events))
-        ],
-        "reorder": [],
-    }
-    if reorder:
-        # Moving event i one place later and event i+1 one place earlier produce
-        # the same delivery, so dedupe on the resulting order rather than on the
-        # (source, target) pair. Without this every adjacent swap is enumerated
-        # twice, which doubles the work and inflates this family's share of a
-        # stratified sample.
-        seen_orders = set()
-        for source in range(len(events)):
-            low = max(0, source - reorder)
-            high = min(len(events) - 1, source + reorder)
-            for target in range(low, high + 1):
-                if target == source:
-                    continue
-                order = list(range(len(events)))
-                order.insert(target, order.pop(source))
-                fingerprint = tuple(order)
-                if fingerprint in seen_orders:
-                    continue
-                seen_orders.add(fingerprint)
-                families["reorder"].append(
-                    Schedule(events=list(events), reorder=(source, target))
-                )
+    if durable_writes < 0:
+        raise ValueError("durable_writes cannot be negative")
+    if reorder < 0:
+        raise ValueError("reorder cannot be negative")
 
-    available = sum(len(group) for group in families.values())
-    enabled = [name for name, group in families.items() if group]
+    # Every schedule treats events as immutable. Sharing this one defensive copy
+    # is what keeps a capped run bounded: previously every candidate copied the
+    # whole stream before sampling, making plan construction O(events*schedules)
+    # memory even when max_schedules was small.
+    events = list(events)
+    reorder_count = sum(1 for _ in _reorder_pairs(len(events), reorder))
+    family_sizes = {
+        "crash": durable_writes,
+        "duplicate": len(events),
+        "reorder": reorder_count,
+    }
+
+    available = sum(family_sizes.values())
+    enabled = [name for name, size in family_sizes.items() if size]
     minimum = len(enabled)
     if max_schedules < minimum:
         if enabled:
@@ -138,21 +121,58 @@ def generate(
             "set max_schedules to at least 0"
         )
     if available <= max_schedules:
-        flat = [s for group in families.values() for s in group]
+        flat = _pick_schedules(events, family_sizes, family_sizes, reorder, random.Random(seed))
         return Plan(schedules=flat, available=available, sampled=False, seed=seed)
 
-    quota = {}
-    for name, group in families.items():
-        if group:
-            quota[name] = max(1, round(max_schedules * len(group) / available))
+    quota = {
+        name: max(1, int(max_schedules * size / available))
+        for name, size in family_sizes.items()
+        if size
+    }
     while sum(quota.values()) > max_schedules:
-        quota[max(quota, key=quota.get)] -= 1
+        name = max((name for name in quota if quota[name] > 1), key=quota.get)
+        quota[name] -= 1
+    while sum(quota.values()) < max_schedules:
+        name = max(quota, key=lambda candidate: family_sizes[candidate] - quota[candidate])
+        quota[name] += 1
 
     rng = random.Random(seed)
-    picked = []
-    for name, group in families.items():
-        take = min(quota.get(name, 0), len(group))
-        if take:
-            picked += rng.sample(group, take)
+    picked = _pick_schedules(events, family_sizes, quota, reorder, rng)
 
     return Plan(schedules=picked, available=available, sampled=True, seed=seed)
+
+
+def _reorder_pairs(event_count: int, distance: int) -> Iterator[tuple[int, int]]:
+    """Yield each distinct bounded move without building delivery fingerprints.
+
+    Moving i one position right is identical to moving i+1 one position left.
+    Those adjacent left moves are the only duplicate representation, so skipping
+    them avoids the former set of O(event_count)-sized fingerprints.
+    """
+    if not distance:
+        return
+    for source in range(event_count):
+        low = max(0, source - distance)
+        high = min(event_count - 1, source + distance)
+        for target in range(low, high + 1):
+            if target == source or target == source - 1:
+                continue
+            yield source, target
+
+
+def _pick_schedules(events, sizes, quota, reorder, rng) -> list[Schedule]:
+    """Instantiate only the descriptors selected by the schedule budget."""
+    picked: list[Schedule] = []
+    for index in sorted(rng.sample(range(sizes["crash"]), quota.get("crash", 0))):
+        picked.append(Schedule(events=events, crash_after=index + 1))
+    for index in sorted(rng.sample(range(sizes["duplicate"]), quota.get("duplicate", 0))):
+        picked.append(Schedule(events=events, duplicate_index=index))
+
+    reorder_indexes = set(
+        rng.sample(range(sizes["reorder"]), quota.get("reorder", 0))
+    )
+    if reorder_indexes:
+        for index, pair in enumerate(_reorder_pairs(len(events), reorder)):
+            if index in reorder_indexes:
+                picked.append(Schedule(events=events, reorder=pair))
+    return picked

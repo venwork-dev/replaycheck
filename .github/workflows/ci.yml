@@ -34,3 +34,6 @@ jobs:
           make demo
           make ordering
           make hazards
+
+      - name: Build wheel
+        run: python -m pip wheel . --no-deps --wheel-dir dist

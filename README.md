@@ -71,6 +71,8 @@ report = check(process_order, events, invariant=charged_at_most_once)
 assert report, report.text()
 ```
 
+For the implementation map and scaling model, see [ARCHITECTURE.md](ARCHITECTURE.md).
+
 The handler writes through a `World` instead of a real database:
 
 - `world.effect(name, key=None, data=None, **fields)` — a durable write. Pass
@@ -222,6 +224,54 @@ family, so the corresponding minimums are 1 without reordering and 2 with it. An
 empty stream has no candidate schedules and permits 0. A smaller value is
 rejected with an error that names the enabled families and the minimum required
 value.
+
+The cap also bounds plan memory. Schedule generation shares one defensive copy
+of the events and instantiates only the selected descriptors; it does not build
+every candidate before sampling. A 10,000-transaction fixture with a budget of
+50 schedules therefore executes 51 runs (the clean run plus 50 sampled fault
+schedules), rather than retaining all 20,000 crash and duplicate descriptors.
+
+## Testing another repository
+
+Install `replaycheck` in that repository's test environment, then add a small
+adapter that maps its decisions and side effects onto `World`. For example,
+`replaycheck_adapter.py` at the repository root:
+
+```python
+def handle_transaction(event, world):
+    transaction = event["transaction_id"]
+    if world.has("posted", transaction):
+        return
+    world.effect(
+        "posted",
+        key=transaction,
+        transaction_id=transaction,
+        amount=event["amount"],
+    )
+
+def balances_stay_non_negative(world):
+    for _, posting in world.effects("posted"):
+        assert posting["amount"] >= 0
+```
+
+Run it from the other repository's root, where its modules are importable:
+
+```console
+replaycheck check \
+  --handler replaycheck_adapter:handle_transaction \
+  --invariant replaycheck_adapter:balances_stay_non_negative \
+  --events tests/fixtures/transactions.jsonl \
+  --max-schedules 200 \
+  --seed 0
+```
+
+The command exits 0 when no selected schedule diverges, 1 when it finds a replay
+failure, and 2 for invalid input or adapter configuration, so it can run directly
+in CI. `--setup`, `--reorder`, and repeatable `--compare EFFECT` flags expose the
+same controls as the Python API.
+
+The adapter must be a model: never point it at production services. Replaycheck
+deliberately duplicates delivery and injects crashes after durable effects.
 
 ## Fixture hazards
 

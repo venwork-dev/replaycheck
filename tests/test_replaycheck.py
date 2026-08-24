@@ -103,6 +103,27 @@ def test_idempotent_sink_suppresses_the_second_write():
     assert world.count("charge") == 1
 
 
+def test_each_delivery_gets_an_isolated_event_value():
+    events = [{"id": "a", "payload": {"amount": 100}}]
+
+    def mutating_handler(event, world):
+        amount = event["payload"].pop("amount")
+        world.effect("posted", key=event["id"], amount=amount)
+
+    report = check(mutating_handler, events)
+    assert report, report.text()
+    assert events == [{"id": "a", "payload": {"amount": 100}}]
+
+
+def test_durable_effect_data_is_a_snapshot():
+    world = World()
+    payload = {"lines": []}
+    world.effect("posted", payload=payload)
+    payload["lines"].append("changed later")
+
+    assert world.effects("posted")[0][1] == {"payload": {"lines": []}}
+
+
 def test_hazards_flags_a_fixture_with_nothing_interesting_in_it():
     findings = {f.name: f for f in hazards(EVENTS)}
     assert findings["duplicate delivery"].present is False
@@ -259,6 +280,30 @@ def test_sampling_covers_every_family_not_just_the_first():
     assert kinds["crash"] and kinds["duplicate"] and kinds["reorder"]
     assert plan.sampled
     assert plan.available > len(plan)
+
+
+def test_medium_dataset_plan_only_materializes_the_budget():
+    """A cap must bound construction, not only execution."""
+    from replaycheck.schedule import generate
+
+    events = [{"transaction_id": index} for index in range(100_000)]
+    plan = generate(events, durable_writes=200_000, max_schedules=200, reorder=1)
+
+    assert len(plan) == 200
+    assert plan.available == 399_999
+    assert all(schedule.events is plan.schedules[0].events for schedule in plan)
+
+
+@pytest.mark.parametrize(
+    ("argument", "value"), [("durable_writes", -1), ("reorder", -1)]
+)
+def test_schedule_counts_cannot_be_negative(argument, value):
+    from replaycheck.schedule import generate
+
+    kwargs = {"durable_writes": 1, "reorder": 0}
+    kwargs[argument] = value
+    with pytest.raises(ValueError, match="cannot be negative"):
+        generate(EVENTS, **kwargs)
 
 
 @pytest.mark.parametrize(

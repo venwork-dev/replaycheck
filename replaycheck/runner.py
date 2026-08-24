@@ -7,6 +7,8 @@ after that point is delivered again, side effects included.
 
 from __future__ import annotations
 
+from copy import deepcopy
+
 from .world import Crash, World
 
 
@@ -56,7 +58,10 @@ def run(
         index = committed
         try:
             for index in range(committed, len(events)):
-                handler(events[index], world)
+                # A broker delivery is a value, not shared mutable test state.
+                # Isolating each attempt prevents a handler that normalizes a
+                # dict in place from changing retries or later schedules.
+                handler(deepcopy(events[index]), world)
                 committed = index + 1
         except Crash:
             world.crash_event_index = index
