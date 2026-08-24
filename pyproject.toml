@@ -29,7 +29,7 @@ Repository = "https://github.com/venwork-dev/replaycheck"
 Issues = "https://github.com/venwork-dev/replaycheck/issues"
 
 [project.optional-dependencies]
-dev = ["pytest>=7"]
+dev = ["pytest>=7", "wheel"]
 
 [project.scripts]
 replaycheck = "replaycheck.__main__:main"
