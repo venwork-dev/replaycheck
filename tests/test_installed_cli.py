@@ -46,8 +46,9 @@ def test_installed_console_entry_point_returns_documented_exit_codes(tmp_path):
             "--no-deps",
             "--wheel-dir",
             wheelhouse,
-            build_source,
-        ]
+            ".",
+        ],
+        cwd=build_source,
     )
     _assert_succeeded(build)
     wheels = list(wheelhouse.glob("replaycheck-*.whl"))
