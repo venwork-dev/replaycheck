@@ -1,4 +1,4 @@
-.PHONY: test demo ordering hazards benchmark
+.PHONY: test demo ordering hazards benchmark package-check
 
 test:
 	python3 -m pytest -q
@@ -14,3 +14,6 @@ hazards:
 
 benchmark:
 	PYTHONPATH=. python3 benchmarks/replaycheck_bench.py
+
+package-check:
+	python3 -m pip wheel . --no-build-isolation --no-deps --wheel-dir /tmp/replaycheck-wheel

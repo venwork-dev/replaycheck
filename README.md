@@ -352,3 +352,6 @@ make benchmark
 ```
 
 The benchmark is informational and is not included in the default CI test job.
+
+For package and PyPI release steps, see [RELEASING.md](RELEASING.md). The
+project's release history is in [CHANGELOG.md](CHANGELOG.md).
