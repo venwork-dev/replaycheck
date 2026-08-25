@@ -15,6 +15,17 @@ def test_public_version_is_the_release_version():
     assert __version__ == "0.2.0"
 
 
+def test_cli_reports_version():
+    result = subprocess.run(
+        [sys.executable, "-m", "replaycheck", "--version"],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+    )
+    assert result.returncode == 0
+    assert result.stdout.strip() == "0.2.0"
+
+
 def _run_external(tmp_path, adapter_source, *arguments):
     (tmp_path / "adapter.py").write_text(adapter_source)
     fixture = tmp_path / "transactions.jsonl"
@@ -80,6 +91,27 @@ def test_external_repository_adapter_errors_are_configuration_failures(tmp_path)
     result = _run_external(tmp_path, "value = 1\n", "--invariant", "adapter:missing")
     assert result.returncode == 2
     assert "replaycheck:" in result.stderr
+
+
+def test_json_report_is_machine_readable(tmp_path):
+    result = _run_external(tmp_path, "def handle(event, world): pass\n", "--json")
+    assert result.returncode == 0
+    report = json.loads(result.stdout)
+    assert report["status"] == "PASS"
+    assert report["complete"] is True
+    assert report["failure"] is None
+
+
+def test_fail_on_partial_makes_a_sampled_run_fail(tmp_path):
+    result = _run_external(tmp_path, "def handle(event, world): pass\n", "--max-schedules", "1", "--fail-on-partial")
+    assert result.returncode == 1
+    assert "PARTIAL" in result.stdout
+
+
+def test_negative_schedule_options_are_configuration_failures(tmp_path):
+    result = _run_external(tmp_path, "def handle(event, world): pass\n", "--reorder", "-1")
+    assert result.returncode == 2
+    assert "must be non-negative" in result.stderr
 
 
 def test_console_loader_imports_from_the_invoking_repository(tmp_path, monkeypatch):

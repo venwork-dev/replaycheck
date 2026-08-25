@@ -10,6 +10,14 @@ from pathlib import Path
 
 from .checker import check
 from .hazards import hazards
+from . import __version__
+
+
+def _non_negative_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be non-negative")
+    return parsed
 
 
 def _load(path: str) -> list:
@@ -56,6 +64,7 @@ def _resolve(spec: str):
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="replaycheck")
+    parser.add_argument("--version", action="version", version=__version__)
     commands = parser.add_subparsers(dest="command", required=True)
 
     hazards_parser = commands.add_parser("hazards", help="inspect a JSON fixture")
@@ -73,9 +82,17 @@ def _parser() -> argparse.ArgumentParser:
     check_parser.add_argument(
         "--compare", action="append", metavar="EFFECT", help="effect to compare; repeatable"
     )
-    check_parser.add_argument("--reorder", type=int, default=0)
-    check_parser.add_argument("--max-schedules", type=int, default=200)
+    check_parser.add_argument("--reorder", type=_non_negative_int, default=0)
+    check_parser.add_argument("--max-schedules", type=_non_negative_int, default=200)
     check_parser.add_argument("--seed", type=int, default=0)
+    check_parser.add_argument(
+        "--json", action="store_true", help="emit a machine-readable report"
+    )
+    check_parser.add_argument(
+        "--fail-on-partial",
+        action="store_true",
+        help="return failure when the schedule budget samples rather than exhausts",
+    )
     return parser
 
 
@@ -108,8 +125,10 @@ def main(argv=None) -> int:
             max_schedules=args.max_schedules,
             seed=args.seed,
         )
-        print(report.text())
-        return 0 if report else 1
+        print(json.dumps(report.as_dict(), sort_keys=True) if args.json else report.text())
+        if not report:
+            return 1
+        return 1 if args.fail_on_partial and not report.complete else 0
     except (
         AttributeError,
         ImportError,

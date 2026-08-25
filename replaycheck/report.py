@@ -76,6 +76,35 @@ class Report:
             )
         return lines
 
+    def as_dict(self) -> dict:
+        """Return a stable, JSON-serializable summary for CI integrations."""
+        payload = {
+            "status": "PASS" if self.ok and not self.sampled else "PARTIAL" if self.ok else "FAIL",
+            "ok": self.ok,
+            "complete": self.complete,
+            "schedules_run": self.schedules_run,
+            "schedules_available": self.schedules_available,
+            "durable_writes": self.durable_writes,
+            "sampled": self.sampled,
+            "seed": self.seed,
+            "blind_spots": [
+                {"effect": render_effect(entry), "count": count}
+                for entry, count in self.blind_spots
+            ],
+        }
+        if self.failure is not None:
+            payload["failure"] = {
+                "kind": self.failure.kind,
+                "headline": self.failure.headline(),
+                "message": self.failure.message,
+                "detail": self.failure.detail_lines(),
+                "event_count": len(self.failure.schedule.events),
+                "schedule": self.failure.schedule.describe(),
+            }
+        else:
+            payload["failure"] = None
+        return payload
+
     def text(self) -> str:
         if self.ok and self.sampled:
             headline = (
