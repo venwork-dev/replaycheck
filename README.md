@@ -35,6 +35,31 @@ breaks.
 make demo
 ```
 
+## Install
+
+Install the released package from PyPI:
+
+```console
+python -m pip install replaycheck
+```
+
+For development, install the repository with its test tools:
+
+```console
+python -m pip install -e ".[dev]"
+```
+
+The 0.2 release supports Python 3.9 through 3.13. The supported public Python
+surface is `check`, `sweep`, `World`, `Crash`, `Report`, `Failure`, `Schedule`,
+`Plan`, `Stalled`, and `hazards`, plus the `replaycheck` console command. The
+handler contract is `handler(event, world)`; applications should treat the
+event and durable-effect data as snapshots and should not connect adapters to
+live services.
+
+Patch releases preserve this surface. New minor releases may add APIs and CLI
+options, but existing documented behavior remains supported unless a release
+note calls out a deliberate breaking change.
+
 ```
 --- before ---
 FAIL  crashed after charge() on event 0

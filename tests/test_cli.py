@@ -5,9 +5,14 @@ import sys
 from pathlib import Path
 
 from replaycheck.__main__ import _resolve
+from replaycheck import __version__
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_public_version_is_the_release_version():
+    assert __version__ == "0.2.0"
 
 
 def _run_external(tmp_path, adapter_source, *arguments):
