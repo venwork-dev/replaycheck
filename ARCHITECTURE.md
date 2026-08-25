@@ -53,6 +53,24 @@ JSON Lines input is decoded incrementally by the CLI to avoid a second full text
 buffer, but the decoded events are retained. Truly disk-backed replay would need
 a separate rewindable event-source abstraction.
 
+## Benchmarking and CI budgets
+
+Run the dependency-free scaling benchmark with:
+
+```console
+make benchmark
+```
+
+It reports wall-clock time, selected schedules, and available schedules for
+100-, 400-, and 800-event streams. The benchmark is intentionally not part of
+the default CI gate because host runners vary; use it to compare changes on the
+same machine. For CI checks, prefer a few hundred short streams through
+`sweep()` or a capped `check(..., max_schedules=...)` with a fixed `seed`.
+
+Treat a sampled `PARTIAL` report as an explicit coverage decision. Use the CLI's
+`--fail-on-partial` option when a pipeline must reject an incomplete schedule
+budget, and record the selected budget and seed alongside the test result.
+
 ## Integration boundary
 
 An application repository owns an adapter with the signature

@@ -344,3 +344,11 @@ from the invariant you write. Nothing here measures conformance to a spec.
 ```
 make test
 ```
+
+To compare replay cost on the current machine:
+
+```console
+make benchmark
+```
+
+The benchmark is informational and is not included in the default CI test job.
